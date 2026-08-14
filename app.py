@@ -14,15 +14,19 @@ load_dotenv()
 
 api_key = os.getenv("GEMINI_API_KEY")
 
+# Streamlit Cloud uses st.secrets
 if not api_key:
-    st.error("GEMINI_API_KEY not found in your .env file.")
-    st.stop()
+    try:
+        api_key = st.secrets["GEMINI_API_KEY"]
+    except Exception:
+        st.error("GEMINI_API_KEY not found in Streamlit Secrets.")
+        st.stop()
 
 client = genai.Client(api_key=api_key)
 
 
 # =========================================================
-# PAGE SETTINGS
+# PAGE
 # =========================================================
 
 st.set_page_config(
@@ -40,21 +44,18 @@ defaults = {
     "chats": {"New Chat": []},
     "current_chat": "New Chat",
     "tool": "Chat",
-
     "quiz_questions": [],
     "quiz_answers": {},
     "quiz_submitted": False,
-
+    "pdf_text": "",
+    "pdf_name": "",
     "pdf_quiz_questions": [],
     "pdf_quiz_answers": {},
     "pdf_quiz_submitted": False,
-
-    "pdf_text": "",
-    "pdf_name": ""
+    "pdf_output": ""
 }
 
 for key, value in defaults.items():
-
     if key not in st.session_state:
         st.session_state[key] = value
 
@@ -94,20 +95,75 @@ def generate_ai(prompt):
     return response.text
 
 
-def clean_json_response(answer):
+def clean_json_response(text):
 
-    answer = answer.strip()
+    text = text.strip()
 
-    if answer.startswith("```json"):
-        answer = answer[7:]
+    if text.startswith("```json"):
+        text = text[7:]
 
-    elif answer.startswith("```"):
-        answer = answer[3:]
+    elif text.startswith("```"):
+        text = text[3:]
 
-    if answer.endswith("```"):
-        answer = answer[:-3]
+    if text.endswith("```"):
+        text = text[:-3]
 
-    return answer.strip()
+    return text.strip()
+
+
+def generate_quiz_from_text(pdf_text, number=5):
+
+    prompt = f"""
+You are MyAI, an AI Learning Assistant.
+
+Create exactly {number} multiple-choice questions
+using ONLY the information in the provided PDF.
+
+Every question must have exactly 4 options.
+
+Make sure:
+- Only one option is correct.
+- Questions are directly based on the PDF.
+- Do not invent information.
+- Include important dates, concepts, activities and facts.
+- Make the questions clear for a college student.
+
+Return ONLY valid JSON.
+
+Format:
+
+[
+  {{
+    "question": "Question",
+    "options": [
+      "Option A",
+      "Option B",
+      "Option C",
+      "Option D"
+    ],
+    "answer": 0,
+    "explanation": "Explanation"
+  }}
+]
+
+Answer:
+0 = A
+1 = B
+2 = C
+3 = D
+
+PDF:
+
+{pdf_text}
+"""
+
+    answer = generate_ai(prompt)
+
+    answer = clean_json_response(answer)
+
+    questions = json.loads(answer)
+
+    return questions
 
 
 # =========================================================
@@ -142,6 +198,7 @@ with st.sidebar:
         ):
 
             st.session_state.current_chat = chat_name
+
             st.session_state.tool = "Chat"
 
             st.rerun()
@@ -156,6 +213,7 @@ with st.sidebar:
     ):
 
         st.session_state.tool = "Notes"
+
         st.rerun()
 
     if st.button(
@@ -164,6 +222,7 @@ with st.sidebar:
     ):
 
         st.session_state.tool = "Quiz"
+
         st.rerun()
 
     if st.button(
@@ -172,6 +231,7 @@ with st.sidebar:
     ):
 
         st.session_state.tool = "Document"
+
         st.rerun()
 
     if st.button(
@@ -180,6 +240,7 @@ with st.sidebar:
     ):
 
         st.session_state.tool = "Study Plan"
+
         st.rerun()
 
 
@@ -225,7 +286,7 @@ if st.session_state.tool == "Notes":
         type="primary"
     ):
 
-        if not topic.strip():
+        if not topic:
 
             st.warning(
                 "Please enter a topic."
@@ -238,8 +299,7 @@ You are MyAI, an AI Learning Assistant.
 
 Create {style} for a {level} student.
 
-Topic:
-{topic}
+Topic: {topic}
 
 Use simple language and clear headings.
 
@@ -305,7 +365,7 @@ elif st.session_state.tool == "Quiz":
         type="primary"
     ):
 
-        if not topic.strip():
+        if not topic:
 
             st.warning(
                 "Please enter a topic."
@@ -354,15 +414,14 @@ Answer:
 
                     answer = clean_json_response(answer)
 
-                    questions = json.loads(answer)
-
-                    if not isinstance(questions, list):
-                        raise ValueError(
-                            "AI did not return a valid question list."
-                        )
+                    questions = json.loads(
+                        answer
+                    )
 
                     st.session_state.quiz_questions = questions
+
                     st.session_state.quiz_answers = {}
+
                     st.session_state.quiz_submitted = False
 
                     st.rerun()
@@ -373,10 +432,6 @@ Answer:
                         f"Quiz error: {e}"
                     )
 
-
-    # =====================================================
-    # SHOW GENERAL QUIZ
-    # =====================================================
 
     if st.session_state.quiz_questions:
 
@@ -397,7 +452,7 @@ Answer:
             answer = st.radio(
                 "Choose your answer:",
                 q["options"],
-                key=f"general_quiz_{i}"
+                key=f"quiz_{i}"
             )
 
             st.session_state.quiz_answers[i] = answer
@@ -521,7 +576,7 @@ elif st.session_state.tool == "Document":
     st.title("📄 PDF Study Assistant")
 
     st.write(
-        "Upload your study PDF and MyAI will read the text."
+        "Upload your study PDF and MyAI will read it."
     )
 
     uploaded_file = st.file_uploader(
@@ -533,7 +588,9 @@ elif st.session_state.tool == "Document":
 
         try:
 
-            reader = PdfReader(uploaded_file)
+            reader = PdfReader(
+                uploaded_file
+            )
 
             extracted_text = ""
 
@@ -618,6 +675,7 @@ elif st.session_state.tool == "Document":
                 pdf_text = st.session_state.pdf_text
 
                 if len(pdf_text) > 100000:
+
                     pdf_text = pdf_text[:100000]
 
                 prompt = f"""
@@ -645,13 +703,17 @@ Give a clear and simple answer.
 
                     try:
 
-                        answer = generate_ai(prompt)
+                        answer = generate_ai(
+                            prompt
+                        )
 
                         st.subheader(
                             "🤖 MyAI Answer"
                         )
 
-                        st.markdown(answer)
+                        st.markdown(
+                            answer
+                        )
 
                     except Exception as e:
 
@@ -714,7 +776,9 @@ PDF:
 
                 try:
 
-                    answer = generate_ai(prompt)
+                    answer = generate_ai(
+                        prompt
+                    )
 
                     st.markdown(answer)
 
@@ -750,7 +814,6 @@ Use:
 Number the points clearly.
 
 Focus on:
-
 - Important facts
 - Important dates
 - Definitions
@@ -771,7 +834,9 @@ PDF:
 
                 try:
 
-                    answer = generate_ai(prompt)
+                    answer = generate_ai(
+                        prompt
+                    )
 
                     st.markdown(answer)
 
@@ -827,7 +892,9 @@ PDF:
 
                 try:
 
-                    answer = generate_ai(prompt)
+                    answer = generate_ai(
+                        prompt
+                    )
 
                     st.markdown(answer)
 
@@ -884,7 +951,9 @@ PDF:
 
                 try:
 
-                    answer = generate_ai(prompt)
+                    answer = generate_ai(
+                        prompt
+                    )
 
                     st.markdown(answer)
 
@@ -946,7 +1015,9 @@ PDF:
 
                 try:
 
-                    answer = generate_ai(prompt)
+                    answer = generate_ai(
+                        prompt
+                    )
 
                     st.markdown(answer)
 
@@ -971,67 +1042,16 @@ PDF:
             if len(pdf_text) > 100000:
                 pdf_text = pdf_text[:100000]
 
-            prompt = f"""
-Create exactly 5 multiple-choice questions
-using ONLY the uploaded PDF.
-
-The questions must cover different parts
-of the PDF.
-
-Return ONLY valid JSON.
-
-Do not use markdown.
-
-Format:
-
-[
-  {{
-    "question": "Question",
-    "options": [
-      "Option A",
-      "Option B",
-      "Option C",
-      "Option D"
-    ],
-    "answer": 0,
-    "explanation": "Explanation"
-  }}
-]
-
-Rules:
-
-answer must be a number:
-0 = first option
-1 = second option
-2 = third option
-3 = fourth option
-
-PDF:
-
-{pdf_text}
-"""
-
             with st.spinner(
                 "❓ Creating quiz from PDF..."
             ):
 
                 try:
 
-                    answer = generate_ai(prompt)
-
-                    answer = clean_json_response(answer)
-
-                    questions = json.loads(answer)
-
-                    if not isinstance(questions, list):
-                        raise ValueError(
-                            "Invalid quiz format."
-                        )
-
-                    if len(questions) == 0:
-                        raise ValueError(
-                            "No questions were generated."
-                        )
+                    questions = generate_quiz_from_text(
+                        pdf_text,
+                        5
+                    )
 
                     st.session_state.pdf_quiz_questions = questions
 
@@ -1042,6 +1062,8 @@ PDF:
                     st.success(
                         "✅ Quiz created from your PDF!"
                     )
+
+                    st.rerun()
 
                 except Exception as e:
 
@@ -1078,11 +1100,6 @@ PDF:
 
                 st.session_state.pdf_quiz_answers[i] = answer
 
-
-            # =================================================
-            # SUBMIT PDF QUIZ
-            # =================================================
-
             if not st.session_state.pdf_quiz_submitted:
 
                 if st.button(
@@ -1093,11 +1110,6 @@ PDF:
                     st.session_state.pdf_quiz_submitted = True
 
                     st.rerun()
-
-
-            # =================================================
-            # PDF QUIZ RESULT
-            # =================================================
 
             else:
 
@@ -1116,8 +1128,8 @@ PDF:
                     )
 
                     if selected == correct:
-                        score += 1
 
+                        score += 1
 
                 total = len(
                     st.session_state.pdf_quiz_questions
@@ -1127,9 +1139,6 @@ PDF:
                     score / total
                 ) * 100
 
-
-                st.divider()
-
                 st.success(
                     f"🏆 Your Score: {score} / {total}"
                 )
@@ -1138,7 +1147,6 @@ PDF:
                     "Percentage",
                     f"{percentage:.0f}%"
                 )
-
 
                 if percentage >= 80:
 
@@ -1160,13 +1168,11 @@ PDF:
                         "📚 Keep studying and try again!"
                     )
 
-
                 st.divider()
 
                 st.subheader(
                     "📖 Answer Review"
                 )
-
 
                 for i, q in enumerate(
                     st.session_state.pdf_quiz_questions
@@ -1213,101 +1219,9 @@ elif st.session_state.tool == "Study Plan":
 
     st.title("📅 AI Study Planner")
 
-    st.write(
-        "Create a personalized study plan using MyAI."
+    st.info(
+        "Personalized Study Planner will be added next."
     )
-
-    subject = st.text_input(
-        "📚 Enter Subject",
-        placeholder="Example: Python"
-    )
-
-    days = st.selectbox(
-        "📅 How many days?",
-        [3, 5, 7, 10, 15, 30]
-    )
-
-    hours = st.selectbox(
-        "⏰ Study hours per day",
-        [1, 2, 3, 4, 5, 6]
-    )
-
-    goal = st.text_area(
-        "🎯 What is your goal?",
-        placeholder="Example: Prepare for my exam"
-    )
-
-    if st.button(
-        "✨ Generate Study Plan",
-        type="primary"
-    ):
-
-        if not subject.strip():
-
-            st.warning(
-                "Please enter a subject."
-            )
-
-        else:
-
-            prompt = f"""
-You are MyAI, an AI Learning Assistant.
-
-Create a simple and practical study plan.
-
-Subject:
-{subject}
-
-Number of days:
-{days}
-
-Study hours per day:
-{hours}
-
-Student goal:
-{goal if goal.strip() else "Learn the subject well"}
-
-Create a day-by-day study timetable.
-
-For each day include:
-
-- Day number
-- Topics to study
-- Study activities
-- Revision
-- Practice questions
-- Short break
-
-At the end include:
-
-## 🎯 Final Revision
-
-## 📝 Exam Tips
-
-## ⭐ Important Advice
-
-Use simple language and make the plan realistic.
-"""
-
-            with st.spinner(
-                "🤖 MyAI is creating your study plan..."
-            ):
-
-                try:
-
-                    answer = generate_ai(prompt)
-
-                    st.success(
-                        "✅ Study plan created!"
-                    )
-
-                    st.markdown(answer)
-
-                except Exception as e:
-
-                    st.error(
-                        f"Study plan error: {e}"
-                    )
 
 
 # =========================================================
@@ -1344,11 +1258,9 @@ else:
                 message["content"]
             )
 
-
     prompt = st.chat_input(
         "Ask me anything about your studies..."
     )
-
 
     if prompt:
 
@@ -1358,7 +1270,6 @@ else:
                 "content": prompt
             }
         )
-
 
         if current_chat.startswith(
             "New Chat"
@@ -1382,11 +1293,9 @@ else:
 
                 current_chat = title
 
-
         with st.chat_message("user"):
 
             st.markdown(prompt)
-
 
         conversation = ""
 
@@ -1398,7 +1307,6 @@ else:
                 + message["content"]
                 + "\n"
             )
-
 
         with st.chat_message("assistant"):
 
@@ -1436,14 +1344,12 @@ else:
 
                 st.error(answer)
 
-
         messages.append(
             {
                 "role": "assistant",
                 "content": answer
             }
         )
-
 
         st.session_state.chats[
             current_chat
